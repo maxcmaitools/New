@@ -1,0 +1,44 @@
+name: Morning Briefing Email
+
+on:
+  schedule:
+    # 08:00 UK time = 07:00 UTC in winter (GMT) / 08:00 UTC would be 09:00 BST
+    # We run at 07:00 UTC year-round; the script uses Europe/London timezone internally
+    - cron: '0 7 * * *'
+  workflow_dispatch:   # allows manual "Run workflow" trigger from GitHub UI
+
+jobs:
+  send-briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install anthropic
+
+      - name: Run morning briefing
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          SMTP_HOST:          ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:          ${{ secrets.SMTP_PORT }}
+          SMTP_TLS:           ${{ secrets.SMTP_TLS }}
+          SMTP_USER:          ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD:      ${{ secrets.SMTP_PASSWORD }}
+          BRIEFING_FROM_EMAIL: ${{ secrets.BRIEFING_FROM_EMAIL }}
+        run: python morning_briefing.py
+
+      - name: Upload HTML preview as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: briefing-preview
+          path: briefing_preview.html
+          retention-days: 7
