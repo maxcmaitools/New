@@ -9,6 +9,7 @@ Sections:
 
 import os
 import sys
+import time
 import smtplib
 import traceback
 from datetime import datetime
@@ -32,7 +33,30 @@ UK_TZ = ZoneInfo("Europe/London")
 
 # ── Claude client ─────────────────────────────────────────────────────────────
 
-client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def _make_client() -> anthropic.Anthropic:
+    """Support API keys (sk-ant-api-) and OAuth tokens (sk-ant-oat- / sk-ant-si-)."""
+    token = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not token:
+        # Fall back to Claude Code's stored OAuth token
+        for path in [
+            "/home/claude/.claude/remote/.oauth_token",
+            "/root/.claude/remote/.oauth_token",
+        ]:
+            try:
+                with open(path) as f:
+                    token = f.read().strip()
+                if token:
+                    break
+            except Exception:
+                pass
+    if not token:
+        raise RuntimeError("No Anthropic API key found. Set ANTHROPIC_API_KEY.")
+    # OAuth tokens use Bearer auth; API keys use X-Api-Key
+    if token.startswith(("sk-ant-oat", "sk-ant-si-")):
+        return anthropic.Anthropic(auth_token=token)
+    return anthropic.Anthropic(api_key=token)
+
+client = _make_client()
 
 # ── Research prompts ──────────────────────────────────────────────────────────
 
@@ -144,27 +168,37 @@ Format your response as clean HTML for an email (use <h3> for sub-headings, <p> 
 # ── Claude web-search query ───────────────────────────────────────────────────
 
 def research_section(prompt: str, section_name: str) -> str:
-    """Use Claude with web search to research a section and return HTML."""
+    """Use Claude with web search to research a section and return HTML. Retries on rate limit."""
     print(f"  Researching {section_name}...", flush=True)
-    try:
-        response = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
-            tools=[
-                {"type": "web_search_20260209", "name": "web_search"},
-            ],
-            messages=[{"role": "user", "content": prompt}],
-        )
-        # Extract text content from response
-        html_parts = []
-        for block in response.content:
-            if block.type == "text":
-                html_parts.append(block.text)
-        return "\n".join(html_parts).strip()
-    except Exception as e:
-        print(f"  ERROR in {section_name}: {e}", flush=True)
-        return f"<p><em>Unable to retrieve {section_name} at this time. Error: {e}</em></p>"
+    delays = [30, 60, 120]
+    for attempt, delay in enumerate([0] + delays):
+        if delay:
+            print(f"  Rate limited — waiting {delay}s before retry {attempt}/{len(delays)}...", flush=True)
+            time.sleep(delay)
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=4096,
+                tools=[
+                    {"type": "web_search_20260209", "name": "web_search"},
+                ],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            html_parts = []
+            for block in response.content:
+                if block.type == "text":
+                    html_parts.append(block.text)
+            result = "\n".join(html_parts).strip()
+            print(f"  Done {section_name} ({len(result)} chars)", flush=True)
+            return result
+        except anthropic.RateLimitError:
+            if attempt < len(delays):
+                continue
+            return f"<p><em>Rate limit reached for {section_name} after {len(delays)} retries. Please try again later.</em></p>"
+        except Exception as e:
+            print(f"  ERROR in {section_name}: {e}", flush=True)
+            return f"<p><em>Unable to retrieve {section_name} at this time. Error: {e}</em></p>"
+    return f"<p><em>Could not retrieve {section_name}.</em></p>"
 
 
 # ── Email assembly ────────────────────────────────────────────────────────────
@@ -280,7 +314,9 @@ def main() -> None:
     print(f"=== Morning Briefing: {date_str} ===", flush=True)
 
     s1 = research_section(build_section_1_prompt(date_str), "Section 1: Economics")
+    time.sleep(5)   # brief pause between sections to avoid rate limits
     s2 = research_section(build_section_2_prompt(date_str), "Section 2: Events")
+    time.sleep(5)
     s3 = research_section(build_section_3_prompt(date_str), "Section 3: Film")
 
     print("  Building email...", flush=True)
