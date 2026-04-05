@@ -323,7 +323,7 @@ def main() -> None:
     html = build_email_html(date_str, s1, s2, s3)
 
     # Save a local copy for debugging / preview
-    preview_path = "/home/user/New/briefing_preview.html"
+    preview_path = "briefing_preview.html"
     with open(preview_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"  Preview saved: {preview_path}", flush=True)
@@ -331,12 +331,11 @@ def main() -> None:
     print("  Sending email...", flush=True)
     try:
         send_email(subject, html)
+        print("=== Done — email sent successfully ===", flush=True)
     except Exception as e:
         print(f"  EMAIL SEND FAILED: {e}", flush=True)
-        print("  (HTML preview still saved — configure SMTP env vars to enable sending)", flush=True)
         traceback.print_exc()
-
-    print("=== Done ===", flush=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
