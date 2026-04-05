@@ -2,13 +2,8 @@ name: Morning Briefing Email
 
 on:
   schedule:
-    # 08:00 UK time. We run at 07:00 UTC (= 08:00 GMT in winter).
-    # BST (summer) is UTC+1 so this fires at 08:00 BST too — perfect.
     - cron: '0 7 * * *'
-  workflow_dispatch:   # also allows manual "Run workflow" from the GitHub Actions UI
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # suppress Node.js 20 deprecation warnings
+  workflow_dispatch:
 
 jobs:
   send-briefing:
@@ -17,37 +12,92 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v4
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5.4.0
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: pip install anthropic
 
-      - name: Check required secrets are present
-        run: |
-          missing=""
-          [ -z "$ANTHROPIC_API_KEY" ]  && missing="$missing ANTHROPIC_API_KEY"
-          [ -z "$SMTP_HOST" ]          && missing="$missing SMTP_HOST"
-          [ -z "$SMTP_USER" ]          && missing="$missing SMTP_USER"
-          [ -z "$SMTP_PASSWORD" ]      && missing="$missing SMTP_PASSWORD"
-          if [ -n "$missing" ]; then
-            echo "ERROR: The following GitHub Secrets are not set:$missing"
-            echo ""
-            echo "Go to: Settings → Secrets and variables → Actions → New repository secret"
-            echo "Required secrets: ANTHROPIC_API_KEY, SMTP_HOST, SMTP_PORT, SMTP_TLS,"
-            echo "                  SMTP_USER, SMTP_PASSWORD, BRIEFING_FROM_EMAIL"
-            exit 1
-          fi
-          echo "All required secrets present ✓"
+      - name: Check secrets and test API key
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SMTP_HOST:         ${{ secrets.SMTP_HOST }}
           SMTP_USER:         ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD:     ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          echo "--- Checking secrets ---"
+          [ -z "$ANTHROPIC_API_KEY" ]  && echo "MISSING: ANTHROPIC_API_KEY"  || echo "OK: ANTHROPIC_API_KEY (${#ANTHROPIC_API_KEY} chars)"
+          [ -z "$SMTP_HOST" ]          && echo "MISSING: SMTP_HOST"          || echo "OK: SMTP_HOST = $SMTP_HOST"
+          [ -z "$SMTP_USER" ]          && echo "MISSING: SMTP_USER"          || echo "OK: SMTP_USER = $SMTP_USER"
+          [ -z "$SMTP_PASSWORD" ]      && echo "MISSING: SMTP_PASSWORD"      || echo "OK: SMTP_PASSWORD (${#SMTP_PASSWORD} chars)"
+
+          missing=0
+          [ -z "$ANTHROPIC_API_KEY" ] && missing=1
+          [ -z "$SMTP_HOST" ]         && missing=1
+          [ -z "$SMTP_USER" ]         && missing=1
+          [ -z "$SMTP_PASSWORD" ]     && missing=1
+          [ $missing -eq 1 ] && echo "ERROR: Add missing secrets at Settings → Secrets → Actions" && exit 1
+
+          echo ""
+          echo "--- Testing Anthropic API key ---"
+          python3 -c "
+          import anthropic, os, sys
+          key = os.environ['ANTHROPIC_API_KEY']
+          print(f'Key prefix: {key[:20]}...')
+          try:
+              client = anthropic.Anthropic(api_key=key)
+              r = client.messages.create(
+                  model='claude-haiku-4-5',
+                  max_tokens=20,
+                  messages=[{'role':'user','content':'Say OK'}]
+              )
+              print('API key works:', r.content[0].text)
+          except anthropic.AuthenticationError as e:
+              print(f'AUTH ERROR: {e}')
+              print('Your ANTHROPIC_API_KEY is invalid or expired.')
+              print('Get a new one at: https://console.anthropic.com/settings/keys')
+              sys.exit(1)
+          except Exception as e:
+              print(f'API ERROR: {type(e).__name__}: {e}')
+              sys.exit(1)
+          "
+
+          echo ""
+          echo "--- Testing SMTP connection ---"
+          python3 -c "
+          import smtplib, os, sys, ssl
+          host = os.environ['SMTP_HOST']
+          port = int(os.environ.get('SMTP_PORT', '465'))
+          user = os.environ['SMTP_USER']
+          password = os.environ['SMTP_PASSWORD']
+          tls = os.environ.get('SMTP_TLS','true').lower() in ('1','true','yes')
+          print(f'Connecting to {host}:{port} (TLS={tls})...')
+          try:
+              if tls:
+                  server = smtplib.SMTP_SSL(host, port)
+              else:
+                  server = smtplib.SMTP(host, port)
+                  server.starttls()
+              server.login(user, password)
+              server.quit()
+              print('SMTP connection and login: OK')
+          except smtplib.SMTPAuthenticationError as e:
+              print(f'SMTP AUTH FAILED: {e}')
+              print('Check SMTP_USER and SMTP_PASSWORD.')
+              print('For Gmail you must use an App Password (not your Google password).')
+              print('Create one at: https://myaccount.google.com/apppasswords')
+              sys.exit(1)
+          except Exception as e:
+              print(f'SMTP ERROR: {type(e).__name__}: {e}')
+              sys.exit(1)
+          "
+        env:
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_TLS:  ${{ secrets.SMTP_TLS }}
 
       - name: Run morning briefing
         env:
@@ -58,11 +108,11 @@ jobs:
           SMTP_USER:           ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD:       ${{ secrets.SMTP_PASSWORD }}
           BRIEFING_FROM_EMAIL: ${{ secrets.BRIEFING_FROM_EMAIL }}
-        run: python morning_briefing.py
+        run: python -u morning_briefing.py
 
-      - name: Upload HTML preview as artifact
+      - name: Upload HTML preview
         if: always()
-        uses: actions/upload-artifact@v4.6.2
+        uses: actions/upload-artifact@v4
         with:
           name: briefing-${{ github.run_number }}
           path: briefing_preview.html
