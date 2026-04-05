@@ -197,10 +197,21 @@ def research_section(prompt: str, section_name: str) -> str:
         except anthropic.RateLimitError:
             if attempt < len(delays):
                 continue
-            return f"<p><em>Rate limit reached for {section_name} after {len(delays)} retries. Please try again later.</em></p>"
+            msg = f"Rate limit: {section_name} failed after {len(delays)} retries"
+            print(f"::error::{msg}", flush=True)
+            return f"<p><em>{msg}</em></p>"
+        except anthropic.AuthenticationError as e:
+            msg = f"API key rejected ({e}) — check ANTHROPIC_API_KEY secret"
+            print(f"::error::{msg}", flush=True)
+            sys.exit(1)
+        except anthropic.BadRequestError as e:
+            msg = f"API bad request for {section_name}: {e}"
+            print(f"::error::{msg}", flush=True)
+            return f"<p><em>{msg}</em></p>"
         except Exception as e:
-            print(f"  ERROR in {section_name}: {e}", flush=True)
-            return f"<p><em>Unable to retrieve {section_name} at this time. Error: {e}</em></p>"
+            msg = f"{section_name} failed: {type(e).__name__}: {e}"
+            print(f"::error::{msg}", flush=True)
+            return f"<p><em>{msg}</em></p>"
     return f"<p><em>Could not retrieve {section_name}.</em></p>"
 
 
@@ -335,11 +346,35 @@ def main() -> None:
     try:
         send_email(subject, html)
         print("=== Done — email sent successfully ===", flush=True)
+    except smtplib.SMTPAuthenticationError as e:
+        msg = f"SMTP login failed for {SMTP_USER}@{SMTP_HOST} — wrong password? Gmail needs an App Password not your Google password. Error: {e}"
+        print(f"::error::{msg}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
+    except smtplib.SMTPException as e:
+        msg = f"SMTP error sending to {SMTP_HOST}:{SMTP_PORT} (TLS={SMTP_TLS}): {e}"
+        print(f"::error::{msg}", flush=True)
+        traceback.print_exc()
+        sys.exit(1)
     except Exception as e:
-        print(f"  EMAIL SEND FAILED: {e}", flush=True)
+        msg = f"Email send failed: {type(e).__name__}: {e}"
+        print(f"::error::{msg}", flush=True)
         traceback.print_exc()
         sys.exit(1)
 
 
+def gha_error(msg: str) -> None:
+    """Print a GitHub Actions error annotation (shows in the Annotations panel)."""
+    # Strips newlines so the whole message fits on one annotation line
+    print(f"::error::{msg.replace(chr(10), ' | ')}", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as exc:
+        gha_error(f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        sys.exit(1)
