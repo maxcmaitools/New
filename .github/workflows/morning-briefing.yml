@@ -26,6 +26,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SMTP_HOST:         ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:         ${{ secrets.SMTP_PORT }}
+          SMTP_TLS:          ${{ secrets.SMTP_TLS }}
           SMTP_USER:         ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD:     ${{ secrets.SMTP_PASSWORD }}
         run: |
@@ -95,9 +97,6 @@ jobs:
               print(f'SMTP ERROR: {type(e).__name__}: {e}')
               sys.exit(1)
           "
-        env:
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_TLS:  ${{ secrets.SMTP_TLS }}
 
       - name: Run morning briefing
         env:
