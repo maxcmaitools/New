@@ -173,7 +173,7 @@ Format your response as clean HTML for an email (use <h3> for sub-headings, <p> 
 def research_section(prompt: str, section_name: str) -> str:
     """Use Claude with web search to research a section and return HTML. Retries on rate limit."""
     print(f"  Researching {section_name}...", flush=True)
-    delays = [30, 60, 120]
+    delays = [60, 120, 180]
     for attempt, delay in enumerate([0] + delays):
         if delay:
             print(f"  Rate limited — waiting {delay}s before retry {attempt}/{len(delays)}...", flush=True)
@@ -181,18 +181,19 @@ def research_section(prompt: str, section_name: str) -> str:
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=4096,
+                max_tokens=8192,
                 tools=[
                     {"type": "web_search_20260209", "name": "web_search"},
                 ],
                 messages=[{"role": "user", "content": prompt}],
             )
-            html_parts = []
-            for block in response.content:
-                if block.type == "text":
-                    html_parts.append(block.text)
-            result = "\n".join(html_parts).strip()
-            print(f"  Done {section_name} ({len(result)} chars)", flush=True)
+            # Collect all text blocks; take the LAST one which is the final HTML output.
+            # (Earlier blocks may be intermediate "thinking aloud" text before searches.)
+            text_blocks = [block.text for block in response.content if block.type == "text"]
+            if not text_blocks:
+                return f"<p><em>No content returned for {section_name}.</em></p>"
+            result = text_blocks[-1].strip()
+            print(f"  Done {section_name} ({len(result)} chars, {len(text_blocks)} text block(s))", flush=True)
             return result
         except anthropic.RateLimitError:
             if attempt < len(delays):
@@ -328,9 +329,11 @@ def main() -> None:
     print(f"=== Morning Briefing: {date_str} ===", flush=True)
 
     s1 = research_section(build_section_1_prompt(date_str), "Section 1: Economics")
-    time.sleep(5)   # brief pause between sections to avoid rate limits
+    print("  Waiting 90s between sections (API rate limit)...", flush=True)
+    time.sleep(90)
     s2 = research_section(build_section_2_prompt(date_str), "Section 2: Events")
-    time.sleep(5)
+    print("  Waiting 90s between sections (API rate limit)...", flush=True)
+    time.sleep(90)
     s3 = research_section(build_section_3_prompt(date_str), "Section 3: Film")
 
     print("  Building email...", flush=True)
