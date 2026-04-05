@@ -22,12 +22,15 @@ import anthropic
 # ── Configuration ────────────────────────────────────────────────────────────
 
 RECIPIENT     = "max.corfield@stages.co.uk"
-SENDER        = os.environ.get("BRIEFING_FROM_EMAIL", "briefing@stages.co.uk")
-SMTP_HOST     = os.environ.get("SMTP_HOST", "localhost")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", "25"))
-SMTP_USER     = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_TLS      = os.environ.get("SMTP_TLS", "").lower() in ("1", "true", "yes")
+SMTP_HOST     = os.environ.get("SMTP_HOST", "").strip()
+SMTP_USER     = os.environ.get("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
+SMTP_TLS      = os.environ.get("SMTP_TLS", "").strip().lower() in ("1", "true", "yes")
+# Port: default 465 for TLS (SSL), 587 for STARTTLS — handle empty string from GitHub Secrets
+_port_str     = os.environ.get("SMTP_PORT", "").strip()
+SMTP_PORT     = int(_port_str) if _port_str else (465 if SMTP_TLS else 587)
+# Sender: fall back to SMTP_USER so only one address needs to be configured
+SENDER        = os.environ.get("BRIEFING_FROM_EMAIL", "").strip() or SMTP_USER
 
 UK_TZ = ZoneInfo("Europe/London")
 
