@@ -26,10 +26,8 @@ SMTP_HOST     = os.environ.get("SMTP_HOST", "").strip()
 SMTP_USER     = os.environ.get("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "").strip()
 SMTP_TLS      = os.environ.get("SMTP_TLS", "").strip().lower() in ("1", "true", "yes")
-# Port: default 465 for TLS (SSL), 587 for STARTTLS — handle empty string from GitHub Secrets
 _port_str     = os.environ.get("SMTP_PORT", "").strip()
 SMTP_PORT     = int(_port_str) if _port_str else (465 if SMTP_TLS else 587)
-# Sender: fall back to SMTP_USER so only one address needs to be configured
 SENDER        = os.environ.get("BRIEFING_FROM_EMAIL", "").strip() or SMTP_USER
 
 UK_TZ = ZoneInfo("Europe/London")
@@ -37,10 +35,8 @@ UK_TZ = ZoneInfo("Europe/London")
 # ── Claude client ─────────────────────────────────────────────────────────────
 
 def _make_client() -> anthropic.Anthropic:
-    """Support API keys (sk-ant-api-) and OAuth tokens (sk-ant-oat- / sk-ant-si-)."""
     token = os.environ.get("ANTHROPIC_API_KEY", "")
     if not token:
-        # Fall back to Claude Code's stored OAuth token
         for path in [
             "/home/claude/.claude/remote/.oauth_token",
             "/root/.claude/remote/.oauth_token",
@@ -54,166 +50,116 @@ def _make_client() -> anthropic.Anthropic:
                 pass
     if not token:
         raise RuntimeError("No Anthropic API key found. Set ANTHROPIC_API_KEY.")
-    # OAuth tokens use Bearer auth; API keys use X-Api-Key
     if token.startswith(("sk-ant-oat", "sk-ant-si-")):
         return anthropic.Anthropic(auth_token=token)
     return anthropic.Anthropic(api_key=token)
 
 client = _make_client()
 
+# ── System prompt (shared) ────────────────────────────────────────────────────
+
+# Limits web searches to reduce token usage and stay within Tier 1 rate limits.
+SYSTEM_PROMPT = (
+    "You are a concise briefing assistant. "
+    "Use the web_search tool a MAXIMUM of 3 times total. "
+    "After your searches, write a SHORT HTML summary (under 500 words). "
+    "Use <h3> for sub-headings, <p> for paragraphs, <a href='...'> for source links, "
+    "<strong> for key figures/names. "
+    "Do NOT add any preamble or explanation before the HTML — output only the HTML content."
+)
+
 # ── Research prompts ──────────────────────────────────────────────────────────
 
 def build_section_1_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. You are researching the morning briefing for Max Corfield, CEO of Serious Stages (staging company for outdoor festivals/concerts) and Serious International / Longcross Studios (film).
+    return f"""Today is {date_str}. Write a morning markets briefing for Max Corfield, CEO of Serious Stages (UK staging company) and Longcross Studios (film).
 
-SECTION 1 — BUSINESS & ECONOMICS UPDATE
+Search for today's latest data on:
+1. Stock markets: FTSE 100, S&P 500, NASDAQ, DAX — closing/current levels and % move
+2. Commodities: Gold (USD/oz), Brent Crude oil (USD/barrel)
+3. Bitcoin current price (USD)
+4. Top 1-2 geopolitical/economic headlines moving markets today (UK or US focus)
 
-Search for the very latest news (today or yesterday) on each of the following. For each item include:
-- The key headline / figure
-- A 2-3 sentence summary of what happened and why it matters
-- A direct link to the source article
-
-Items to research:
-1. Major global stock market movements: FTSE 100, S&P 500, Dow Jones, NASDAQ, DAX (% moves, direction, key drivers)
-2. Gold price (current spot price USD/oz and any notable moves)
-3. Oil price (Brent Crude USD/barrel and WTI, key drivers)
-4. Bitcoin price (current USD price, 24h change, key narrative)
-5. Key geopolitical events that may impact global economics and world growth — with particular focus on:
-   - UK economic news (interest rates, trade, sterling, government policy)
-   - US economic news (Fed, tariffs, trade policy, key economic data)
-   - Any major global events (wars, sanctions, energy supply, trade disputes) affecting markets
-
-Be specific with numbers. Include source links to Reuters, Bloomberg, FT, BBC Business, CNBC, or similar reputable financial news sources. Format your response as clean HTML for an email (use <h3> for sub-headings, <p> for text, <a href="..."> for links, <strong> for key figures)."""
+For each item: one headline figure + one sentence of context + a source link (Reuters, FT, BBC Business, CNBC).
+Format as clean HTML only. Be concise."""
 
 
 def build_section_2_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. You are researching the morning briefing for Max Corfield, CEO of Serious Stages — a UK company that builds stages for outdoor festivals and concerts (www.stages.co.uk).
+    return f"""Today is {date_str}. Write a UK live events industry briefing for Max Corfield, CEO of Serious Stages (staging company, stages.co.uk).
 
-SECTION 2 — UK EVENTS INDUSTRY UPDATE (Live Music Focus)
+Search for the latest news on:
+1. Major festival/promoter news: Live Nation UK, Glastonbury, AEG Europe — any announcements, financials, or events
+2. UK staging/production companies: ES Global, Star Events, Acorn Events — any news
+3. Major artist UK/Europe tour announcements or big ticket sales news this week
 
-Search for the very latest news on each of the following. For each item include a 2-3 sentence summary and a direct link to the source.
-
-1. MAJOR CLIENTS — what are these organisations doing right now?
-   - Live Nation (UK/Europe): any new events, venue announcements, financial news, policy changes
-   - Glastonbury Festival: lineup news, ticket news, infrastructure, contracts
-   - Other major UK festival promoters: AEG, SJM, DF Concerts, Festival Republic
-
-2. KEY COMPETITORS — what are these staging/production companies doing?
-   - ES Global Ltd (staging company)
-   - Star Events Live (staging/production)
-   - Acorn Events (staging)
-   - Any other major UK staging/outdoor production companies
-
-3. ARTIST TOUR ANNOUNCEMENTS — who is announcing UK, European, or global tours?
-   Search for: major artist UK tour announcements, stadium tours announced, arena tours UK 2024/2025/2026, festival headliner announcements
-
-4. TICKET SALES — how are UK live events performing commercially?
-   - Any reports on UK ticket sales performance
-   - Sell-out shows, struggling tours, pricing news
-   - Industry confidence / economic pressures on live events
-
-5. UK LIVE MUSIC INDUSTRY NEWS — search these specific trade publications:
-   - Access All Areas magazine (accessaa.co.uk) — any latest stories
-   - TPI Magazine (tpimagazine.com) — any latest stories
-   - LIVE (liveuk.com) — any latest stories
-   - IQ Magazine — any latest stories
-   - Music Week — any latest stories
-   - Any other relevant trade press
-
-Format your response as clean HTML for an email (use <h3> for sub-headings, <p> for text, <a href="..."> for links, <strong> for key names)."""
+For each item: 2-sentence summary + source link (Access All Areas, TPI Magazine, Music Week, NME, Billboard, Guardian Music).
+Format as clean HTML only. Be concise."""
 
 
 def build_section_3_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. You are researching the morning briefing for Max Corfield, who runs:
-- Serious International (film production/services)
-- Longcross Studios (www.lxss.co.uk) — a major UK film studio near London
+    return f"""Today is {date_str}. Write a film industry briefing for Max Corfield, who runs Longcross Studios (lxss.co.uk) and Serious International.
 
-SECTION 3 — FILM INDUSTRY UPDATE
+Search for the latest news on:
+1. UK film studio news: Pinewood, Shepperton, Longcross, Leavesden — productions filming or announced
+2. Hollywood: biggest studio/streaming story today (Disney, Netflix, Warner Bros, Universal etc) — greenlight, box office, or deal news
+3. Virtual production / LED volume technology news (relevant to Longcross)
 
-Search for the very latest news on each of the following. For each item include a 2-3 sentence summary and a direct link to the source.
-
-1. UK FILM INDUSTRY NEWS
-   - What is happening at UK film studios (Pinewood, Shepperton, Longcross, Leavesden etc)
-   - UK film production news — what major productions are filming or announced
-   - UK film tax relief / government policy news affecting production
-   - British Film Institute (BFI) news
-
-2. US / HOLLYWOOD NEWS (where most decisions are made)
-   - Major studio announcements (Disney, Warner Bros, Universal, Netflix, Amazon, Apple TV+, Paramount, Sony)
-   - Streaming service news affecting film production decisions
-   - Box office performance (this week's results and what it means for the industry)
-   - Major production greenlight/cancellation/delay news
-   - Strike/union news (SAG-AFTRA, WGA, IATSE, Teamsters)
-   - Any major mergers, acquisitions, or deals in Hollywood
-
-3. GLOBAL FILM MARKET
-   - International box office news
-   - Major foreign film markets news (China, India, Europe)
-   - Any major festival news (Cannes, Venice, Berlin, Sundance) if relevant
-
-4. TECHNOLOGY & INNOVATION
-   - AI in film production news
-   - Virtual production / LED volume technology news (relevant to Longcross Studios)
-   - Any major tech affecting how films are made
-
-Search these specific trade publications:
-   - The Hollywood Reporter (hollywoodreporter.com)
-   - Variety (variety.com)
-   - Deadline Hollywood (deadline.com)
-   - Screen International (screendaily.com)
-   - The Guardian Film (theguardian.com/film)
-   - Reuters Entertainment
-   - BBC Culture / Film
-
-Format your response as clean HTML for an email (use <h3> for sub-headings, <p> for text, <a href="..."> for links, <strong> for key names/titles)."""
+For each item: 2-sentence summary + source link (Hollywood Reporter, Variety, Deadline, Screen International).
+Format as clean HTML only. Be concise."""
 
 
 # ── Claude web-search query ───────────────────────────────────────────────────
 
 def research_section(prompt: str, section_name: str) -> str:
-    """Use Claude with web search to research a section and return HTML. Retries on rate limit."""
+    """Use Claude with web search to research a section. Retries on rate limit."""
     print(f"  Researching {section_name}...", flush=True)
-    delays = [60, 120, 180]
-    for attempt, delay in enumerate([0] + delays):
+    # Retry delays: initial attempt (0s), then 120s, 180s, 240s
+    delays = [0, 120, 180, 240]
+    for attempt, delay in enumerate(delays):
         if delay:
-            print(f"  Rate limited — waiting {delay}s before retry {attempt}/{len(delays)}...", flush=True)
+            print(f"  Rate limited — waiting {delay}s before retry {attempt}/{len(delays)-1}...", flush=True)
             time.sleep(delay)
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=8192,
-                tools=[
-                    {"type": "web_search_20260209", "name": "web_search"},
-                ],
+                max_tokens=3000,
+                system=SYSTEM_PROMPT,
+                tools=[{"type": "web_search_20260209", "name": "web_search"}],
                 messages=[{"role": "user", "content": prompt}],
             )
-            # Collect all text blocks; take the LAST one which is the final HTML output.
-            # (Earlier blocks may be intermediate "thinking aloud" text before searches.)
-            text_blocks = [block.text for block in response.content if block.type == "text"]
+
+            # Check if we hit the token limit mid-response
+            if response.stop_reason == "max_tokens":
+                print(f"  WARNING: {section_name} hit max_tokens — response may be truncated", flush=True)
+
+            # Collect all text blocks. The full HTML is usually the longest text block.
+            text_blocks = [b.text for b in response.content if b.type == "text"]
             if not text_blocks:
                 return f"<p><em>No content returned for {section_name}.</em></p>"
-            result = text_blocks[-1].strip()
-            print(f"  Done {section_name} ({len(result)} chars, {len(text_blocks)} text block(s))", flush=True)
+
+            # Pick the longest text block — that's the complete HTML summary
+            result = max(text_blocks, key=len).strip()
+            print(f"  Done {section_name} ({len(result)} chars across {len(text_blocks)} text block(s))", flush=True)
             return result
+
         except anthropic.RateLimitError:
-            if attempt < len(delays):
+            if attempt < len(delays) - 1:
                 continue
-            msg = f"Rate limit: {section_name} failed after {len(delays)} retries"
+            msg = f"Rate limit: {section_name} failed after {len(delays)} attempts"
             print(f"::error::{msg}", flush=True)
-            return f"<p><em>{msg}</em></p>"
+            return f"<p><em>{msg}. Please check API rate limits.</em></p>"
         except anthropic.AuthenticationError as e:
-            msg = f"API key rejected ({e}) — check ANTHROPIC_API_KEY secret"
-            print(f"::error::{msg}", flush=True)
+            print(f"::error::API key rejected ({e}) — check ANTHROPIC_API_KEY secret", flush=True)
             sys.exit(1)
         except anthropic.BadRequestError as e:
             msg = f"API bad request for {section_name}: {e}"
             print(f"::error::{msg}", flush=True)
             return f"<p><em>{msg}</em></p>"
         except Exception as e:
-            msg = f"{section_name} failed: {type(e).__name__}: {e}"
+            msg = f"{section_name} unexpected error: {type(e).__name__}: {e}"
             print(f"::error::{msg}", flush=True)
             return f"<p><em>{msg}</em></p>"
-    return f"<p><em>Could not retrieve {section_name}.</em></p>"
+
+    return f"<p><em>Could not retrieve {section_name} after all retries.</em></p>"
 
 
 # ── Email assembly ────────────────────────────────────────────────────────────
@@ -297,7 +243,6 @@ def send_email(subject: str, html_body: str) -> None:
     msg["From"]    = SENDER
     msg["To"]      = RECIPIENT
 
-    # Plain text fallback
     plain = f"Morning Briefing — {subject}\n\nPlease view this email in an HTML-capable email client."
     msg.attach(MIMEText(plain, "plain"))
     msg.attach(MIMEText(html_body, "html"))
@@ -309,7 +254,7 @@ def send_email(subject: str, html_body: str) -> None:
         try:
             server.starttls()
         except smtplib.SMTPException:
-            pass  # server doesn't support STARTTLS — continue without
+            pass
 
     if SMTP_USER and SMTP_PASSWORD:
         server.login(SMTP_USER, SMTP_PASSWORD)
@@ -323,23 +268,22 @@ def send_email(subject: str, html_body: str) -> None:
 
 def main() -> None:
     now_uk   = datetime.now(UK_TZ)
-    date_str = now_uk.strftime("%A %d %B %Y")   # e.g. "Friday 04 April 2025"
+    date_str = now_uk.strftime("%A %d %B %Y")
     subject  = f"Morning Briefing — {date_str}"
 
     print(f"=== Morning Briefing: {date_str} ===", flush=True)
 
     s1 = research_section(build_section_1_prompt(date_str), "Section 1: Economics")
-    print("  Waiting 90s between sections (API rate limit)...", flush=True)
-    time.sleep(90)
+    print("  Waiting 3 minutes between sections (API rate limit)...", flush=True)
+    time.sleep(180)
     s2 = research_section(build_section_2_prompt(date_str), "Section 2: Events")
-    print("  Waiting 90s between sections (API rate limit)...", flush=True)
-    time.sleep(90)
+    print("  Waiting 3 minutes between sections (API rate limit)...", flush=True)
+    time.sleep(180)
     s3 = research_section(build_section_3_prompt(date_str), "Section 3: Film")
 
     print("  Building email...", flush=True)
     html = build_email_html(date_str, s1, s2, s3)
 
-    # Save a local copy for debugging / preview
     preview_path = "briefing_preview.html"
     with open(preview_path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -350,7 +294,7 @@ def main() -> None:
         send_email(subject, html)
         print("=== Done — email sent successfully ===", flush=True)
     except smtplib.SMTPAuthenticationError as e:
-        msg = f"SMTP login failed for {SMTP_USER}@{SMTP_HOST} — wrong password? Gmail needs an App Password not your Google password. Error: {e}"
+        msg = f"SMTP login failed for {SMTP_USER}@{SMTP_HOST} — Gmail needs an App Password. Error: {e}"
         print(f"::error::{msg}", flush=True)
         traceback.print_exc()
         sys.exit(1)
@@ -367,8 +311,6 @@ def main() -> None:
 
 
 def gha_error(msg: str) -> None:
-    """Print a GitHub Actions error annotation (shows in the Annotations panel)."""
-    # Strips newlines so the whole message fits on one annotation line
     print(f"::error::{msg.replace(chr(10), ' | ')}", flush=True)
 
 
