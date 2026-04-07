@@ -56,63 +56,48 @@ def _make_client() -> anthropic.Anthropic:
 
 client = _make_client()
 
-# ── System prompt (shared) ────────────────────────────────────────────────────
-
-# Limits web searches to reduce token usage and stay within Tier 1 rate limits.
-SYSTEM_PROMPT = (
-    "You are a concise briefing assistant. "
-    "Use the web_search tool a MAXIMUM of 3 times total. "
-    "After your searches, write a SHORT HTML summary (under 500 words). "
-    "Use <h3> for sub-headings, <p> for paragraphs, <a href='...'> for source links, "
-    "<strong> for key figures/names. "
-    "Do NOT add any preamble or explanation before the HTML — output only the HTML content."
-)
-
 # ── Research prompts ──────────────────────────────────────────────────────────
 
 def build_section_1_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. Write a morning markets briefing for Max Corfield, CEO of Serious Stages (UK staging company) and Longcross Studios (film).
+    return f"""Today is {date_str}. Research today's financial markets and economic news for a CEO briefing.
 
-Search for today's latest data on:
-1. Stock markets: FTSE 100, S&P 500, NASDAQ, DAX — closing/current levels and % move
-2. Commodities: Gold (USD/oz), Brent Crude oil (USD/barrel)
-3. Bitcoin current price (USD)
-4. Top 1-2 geopolitical/economic headlines moving markets today (UK or US focus)
+Use web search to find TODAY's data on:
+1. Stock markets: FTSE 100, S&P 500, NASDAQ, DAX — current level and % change
+2. Commodities: Gold price (USD/oz) and Brent Crude oil (USD/barrel)
+3. Bitcoin price in USD today
+4. The 2 most important UK or US economic/geopolitical headlines moving markets today
 
-For each item: one headline figure + one sentence of context + a source link (Reuters, FT, BBC Business, CNBC).
-Format as clean HTML only. Be concise."""
+For each: the key number/headline, one sentence of context, and the source URL.
+Keep it factual and brief."""
 
 
 def build_section_2_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. Write a UK live events industry briefing for Max Corfield, CEO of Serious Stages (staging company, stages.co.uk).
+    return f"""Today is {date_str}. Research UK live events industry news for a CEO briefing. The CEO runs Serious Stages, a UK staging company for outdoor festivals (stages.co.uk).
 
-Search for the latest news on:
-1. Major festival/promoter news: Live Nation UK, Glastonbury, AEG Europe — any announcements, financials, or events
-2. UK staging/production companies: ES Global, Star Events, Acorn Events — any news
-3. Major artist UK/Europe tour announcements or big ticket sales news this week
+Use web search to find:
+1. Any news about Live Nation UK, Glastonbury Festival, or major UK festival promoters (AEG, SJM, Festival Republic) this week
+2. Any news about UK staging/production companies: ES Global, Star Events, Acorn Events
+3. The biggest UK or European artist tour announcement or ticket sales story this week
 
-For each item: 2-sentence summary + source link (Access All Areas, TPI Magazine, Music Week, NME, Billboard, Guardian Music).
-Format as clean HTML only. Be concise."""
+For each: a 2-sentence summary and the source URL. Use trade sources: Access All Areas (accessaa.co.uk), TPI Magazine (tpimagazine.com), Music Week, NME, Billboard, Guardian Music."""
 
 
 def build_section_3_prompt(date_str: str) -> str:
-    return f"""Today is {date_str}. Write a film industry briefing for Max Corfield, who runs Longcross Studios (lxss.co.uk) and Serious International.
+    return f"""Today is {date_str}. Research film industry news for a CEO briefing. The CEO runs Longcross Studios (lxss.co.uk) near London and Serious International.
 
-Search for the latest news on:
-1. UK film studio news: Pinewood, Shepperton, Longcross, Leavesden — productions filming or announced
-2. Hollywood: biggest studio/streaming story today (Disney, Netflix, Warner Bros, Universal etc) — greenlight, box office, or deal news
-3. Virtual production / LED volume technology news (relevant to Longcross)
+Use web search to find:
+1. The biggest UK film studio or production news this week (Pinewood, Shepperton, Longcross, or Leavesden — what's filming, announced, or happening)
+2. The biggest Hollywood story today (Disney, Netflix, Warner Bros, Universal etc — greenlight, merger, box office, or deal)
+3. Any virtual production or LED volume technology news relevant to UK studios
 
-For each item: 2-sentence summary + source link (Hollywood Reporter, Variety, Deadline, Screen International).
-Format as clean HTML only. Be concise."""
+For each: a 2-sentence summary and the source URL. Use: Hollywood Reporter, Variety, Deadline, Screen International, Broadcast."""
 
 
-# ── Claude web-search query ───────────────────────────────────────────────────
+# ── Two-step research: gather facts, then format as HTML ──────────────────────
 
-def research_section(prompt: str, section_name: str) -> str:
-    """Use Claude with web search to research a section. Retries on rate limit."""
+def _gather_facts(prompt: str, section_name: str) -> str:
+    """Step 1: web search to gather raw facts. Returns text (markdown is fine here)."""
     print(f"  Researching {section_name}...", flush=True)
-    # Retry delays: initial attempt (0s), then 120s, 180s, 240s
     delays = [0, 120, 180, 240]
     for attempt, delay in enumerate(delays):
         if delay:
@@ -121,45 +106,86 @@ def research_section(prompt: str, section_name: str) -> str:
         try:
             response = client.messages.create(
                 model="claude-sonnet-4-6",
-                max_tokens=3000,
-                system=SYSTEM_PROMPT,
+                max_tokens=2000,
+                system=(
+                    "You are a research assistant. Use web_search to find current facts. "
+                    "Use the tool a maximum of 3 times. "
+                    "Report findings as clear bullet points with exact source URLs."
+                ),
                 tools=[{"type": "web_search_20260209", "name": "web_search"}],
                 messages=[{"role": "user", "content": prompt}],
             )
-
-            # Check if we hit the token limit mid-response
-            if response.stop_reason == "max_tokens":
-                print(f"  WARNING: {section_name} hit max_tokens — response may be truncated", flush=True)
-
-            # Collect all text blocks. The full HTML is usually the longest text block.
             text_blocks = [b.text for b in response.content if b.type == "text"]
             if not text_blocks:
-                return f"<p><em>No content returned for {section_name}.</em></p>"
-
-            # Pick the longest text block — that's the complete HTML summary
+                return ""
             result = max(text_blocks, key=len).strip()
-            print(f"  Done {section_name} ({len(result)} chars across {len(text_blocks)} text block(s))", flush=True)
+            print(f"  Facts gathered for {section_name} ({len(result)} chars)", flush=True)
             return result
-
         except anthropic.RateLimitError:
             if attempt < len(delays) - 1:
                 continue
             msg = f"Rate limit: {section_name} failed after {len(delays)} attempts"
             print(f"::error::{msg}", flush=True)
-            return f"<p><em>{msg}. Please check API rate limits.</em></p>"
+            return ""
         except anthropic.AuthenticationError as e:
             print(f"::error::API key rejected ({e}) — check ANTHROPIC_API_KEY secret", flush=True)
             sys.exit(1)
-        except anthropic.BadRequestError as e:
-            msg = f"API bad request for {section_name}: {e}"
-            print(f"::error::{msg}", flush=True)
-            return f"<p><em>{msg}</em></p>"
         except Exception as e:
-            msg = f"{section_name} unexpected error: {type(e).__name__}: {e}"
-            print(f"::error::{msg}", flush=True)
-            return f"<p><em>{msg}</em></p>"
+            print(f"::error::{section_name} research error: {type(e).__name__}: {e}", flush=True)
+            return ""
+    return ""
 
-    return f"<p><em>Could not retrieve {section_name} after all retries.</em></p>"
+
+def _format_as_html(raw_facts: str, section_name: str) -> str:
+    """Step 2: convert raw facts to clean HTML. No web search — output is always clean."""
+    if not raw_facts:
+        return f"<p><em>No data available for {section_name} today.</em></p>"
+
+    print(f"  Formatting {section_name} as HTML...", flush=True)
+    format_prompt = f"""Convert the following research notes into a clean HTML section for an email briefing.
+
+RESEARCH NOTES:
+{raw_facts}
+
+OUTPUT REQUIREMENTS:
+- Output ONLY valid HTML — begin immediately with a <h3> tag, nothing before it
+- Use <h3> for each topic heading
+- Use <p> for paragraph text
+- Use <strong> for key numbers, names, and figures
+- Use <a href="URL">Source Name</a> for all source links (put at end of each paragraph)
+- Do NOT use: markdown, emoji, --- separators, bullet points with - or *, asterisks for bold
+- Aim for 3–5 topics, each with one <h3> and one or two <p> tags
+- Be factual and concise"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=1500,
+            system="You are an HTML email formatter. Output ONLY valid HTML. The very first character of your response must be '<'. No markdown, no emoji, no preamble.",
+            messages=[{"role": "user", "content": format_prompt}],
+        )
+        text_blocks = [b.text for b in response.content if b.type == "text"]
+        if not text_blocks:
+            return f"<p><em>Formatting failed for {section_name}.</em></p>"
+        result = max(text_blocks, key=len).strip()
+        # Safety: strip any text before the first HTML tag
+        import re
+        match = re.search(r'<[a-zA-Z]', result)
+        if match and match.start() > 0:
+            result = result[match.start():]
+        print(f"  Formatted {section_name} ({len(result)} chars)", flush=True)
+        return result
+    except Exception as e:
+        print(f"::error::Format step failed for {section_name}: {e}", flush=True)
+        # Fallback: wrap raw facts in a preformatted block
+        escaped = raw_facts.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return f"<p><em>Formatting error — raw notes below:</em></p><pre style='font-size:13px;white-space:pre-wrap'>{escaped[:2000]}</pre>"
+
+
+def research_section(prompt: str, section_name: str) -> str:
+    """Two-step: gather facts with web search, then format as clean HTML."""
+    facts = _gather_facts(prompt, section_name)
+    return _format_as_html(facts, section_name)
 
 
 # ── Email assembly ────────────────────────────────────────────────────────────
